@@ -87,6 +87,32 @@ export function resolveConfig(def: WorkflowDefinition): ResolvedConfig {
     ? coerceInt(c.server.port, 0) || undefined
     : undefined
 
+  // Validate numeric ranges
+  if (max_concurrent_agents < 1) {
+    throw new SymphonyError('config_validation_error', 'concurrency.max_workers must be at least 1')
+  }
+  if (poll_interval_ms < 1_000) {
+    throw new SymphonyError('config_validation_error', 'polling.interval_ms must be at least 1000')
+  }
+  if (max_turns < 1) {
+    throw new SymphonyError('config_validation_error', 'codex.max_turns must be at least 1')
+  }
+  if (max_retries < 0) {
+    throw new SymphonyError('config_validation_error', 'retry.max_retries cannot be negative')
+  }
+  if (stall_timeout_ms !== 0 && stall_timeout_ms < 0) {
+    throw new SymphonyError('config_validation_error', 'codex.stall_timeout_ms must be 0 (disabled) or positive')
+  }
+  if (turn_timeout_ms < 1_000) {
+    throw new SymphonyError('config_validation_error', 'codex.turn_timeout_ms must be at least 1000')
+  }
+
+  const notif = c.notifications ?? {}
+  const notifications_webhook_url = resolveEnvVar(notif.webhook_url)
+  const notifications_on_complete = notif.on_complete ?? true
+  const notifications_on_failure = notif.on_failure ?? true
+  const notifications_on_retry = notif.on_retry ?? false
+
   return {
     tracker_kind,
     tracker_api_key,
@@ -109,6 +135,10 @@ export function resolveConfig(def: WorkflowDefinition): ResolvedConfig {
     max_retries,
     max_retry_backoff_ms,
     server_port,
+    notifications_webhook_url,
+    notifications_on_complete,
+    notifications_on_failure,
+    notifications_on_retry,
     prompt_template: def.prompt_template,
   }
 }

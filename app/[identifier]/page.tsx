@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { use } from 'react'
 import { IssueDetail } from '@/lib/symphony/types'
+import { apiFetch } from '../lib/api-fetch'
 import { StatusBadge } from '../components/status-badge'
 import { TimeAgo } from '../components/time-ago'
 import { formatTokens } from '../components/token-stats'
@@ -17,7 +18,7 @@ export default function IssuePage({ params }: { params: Promise<{ identifier: st
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch(`/api/v1/${identifier}`)
+        const res = await apiFetch(`/api/v1/${identifier}`)
         if (res.status === 404) {
           setNotFound(true)
           return
@@ -138,6 +139,11 @@ export default function IssuePage({ params }: { params: Promise<{ identifier: st
                     {h.error && (
                       <span className="text-xs text-gray-500 truncate max-w-xs" title={h.error}>
                         {h.error}
+                      </span>
+                    )}
+                    {h.after_run_hook_error && (
+                      <span className="text-xs text-orange-500 truncate max-w-xs" title={h.after_run_hook_error}>
+                        hook: {h.after_run_hook_error}
                       </span>
                     )}
                   </div>

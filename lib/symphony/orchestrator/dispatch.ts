@@ -19,6 +19,9 @@ export function isEligible(
   if (state.claimed.has(issue.id)) return false
   if (state.running.has(issue.id)) return false
 
+  // Not waiting in retry queue
+  if (state.retryAttempts.has(issue.id)) return false
+
   // Global concurrency check
   if (state.running.size >= config.max_concurrent_agents) return false
 
@@ -32,10 +35,10 @@ export function isEligible(
     if (runningInState >= stateLimit) return false
   }
 
-  // "Todo" blocker rule: all blocked_by must be in terminal states
+  // Blocker rule: Todo issues with any blocked_by entries are skipped.
+  // TODO: Full resolution requires querying tracker state for all blocked_by issues
+  // to verify they are in terminal states before allowing dispatch.
   if (issue.state.trim().toLowerCase() === 'todo' && issue.blocked_by.length > 0) {
-    // We don't have live state for blockers here; checked at dispatch time
-    // This is a lightweight check — full blocker resolution is in the orchestrator
     return false
   }
 

@@ -16,6 +16,8 @@ import { OrchestratorState } from './state'
 import { tick } from './poll-loop'
 import { scheduleRetry } from './retry'
 import { runWorker } from './worker'
+import { HistoryStore } from '../persistence/history-store'
+import { fireWebhook } from '../notifications/webhook'
 
 const log = (...args: unknown[]) => console.log('[symphony:orchestrator]', ...args)
 
@@ -26,8 +28,8 @@ export class Orchestrator {
   private pollTimer: ReturnType<typeof setTimeout> | null = null
   private watcher: FSWatcher | null = null
   private refreshRequested = false
-  // Map issueId -> Issue for retry resolution
   private issueCache = new Map<string, Issue>()
+  private historyStore: HistoryStore | null = null
 
   async start(workflowPath?: string): Promise<void> {
     this.workflowPath =
@@ -40,6 +42,20 @@ export class Orchestrator {
     log(`Starting with workflow: ${this.workflowPath}`)
 
     this.loadConfig()
+
+    // Initialise history store and seed in-memory state from persisted records
+    if (this.config) {
+      this.historyStore = new HistoryStore(this.config.workspace_root)
+      try {
+        const restored = await this.historyStore.loadAll()
+        for (const id of restored.completed) this.state.completed.add(id)
+        for (const [id, entries] of restored.issueHistory) this.state.issueHistory.set(id, entries)
+        this.state.tokenTotals = restored.tokenTotals
+        log(`Restored ${restored.completed_count} completed issues from history`)
+      } catch (err) {
+        log(`Failed to restore history: ${(err as Error).message}`)
+      }
+    }
 
     // Start file watcher for hot reload
     try {
@@ -69,12 +85,10 @@ export class Orchestrator {
       this.watcher = null
     }
 
-    // Cancel all retry timers
     for (const issueId of [...this.state.retryAttempts.keys()]) {
       this.state.cancelRetry(issueId)
     }
 
-    // Kill all running workers
     for (const [, entry] of this.state.running) {
       entry.abort.abort()
     }
@@ -108,7 +122,6 @@ export class Orchestrator {
   getIssueDetail(identifier: string): IssueDetail | null {
     const s = this.state
 
-    // Search running
     let runningEntry: ReturnType<OrchestratorState['getRunningForIssue']> = undefined
     let foundId: string | null = null
     for (const [id, entry] of s.running) {
@@ -119,7 +132,6 @@ export class Orchestrator {
       }
     }
 
-    // Search retry
     let retryEntry: ReturnType<OrchestratorState['getRetryForIssue']> = undefined
     for (const [, entry] of s.retryAttempts) {
       if (entry.identifier === identifier) {
@@ -128,7 +140,6 @@ export class Orchestrator {
       }
     }
 
-    // Check if completed
     let completedId: string | null = null
     for (const id of s.completed) {
       const cached = this.issueCache.get(id)
@@ -138,7 +149,6 @@ export class Orchestrator {
       }
     }
 
-    // Get history
     let historyId: string | null = foundId ?? completedId
     if (!historyId) {
       for (const [id] of s.issueHistory) {
@@ -234,7 +244,11 @@ export class Orchestrator {
           }
           scheduleRetry(issueId, entry.issue.identifier, attempt, reason, this.state, config, (id) => {
             const issue = this.issueCache.get(id)
-            if (issue) this.dispatchWorker(issue, attempt)
+            if (!issue) {
+              log(`No cached issue for ${id}, skipping retry dispatch`)
+              return
+            }
+            this.dispatchWorker(issue, attempt)
           })
         },
         dispatchIssue: (issue, attempt) => {
@@ -249,7 +263,6 @@ export class Orchestrator {
       log(`Tick error: ${(err as Error).message}`)
     }
 
-    // Schedule next tick
     if (this.state.running_status === 'running') {
       this.schedulePoll(this.config?.poll_interval_ms ?? 60_000)
     }
@@ -282,30 +295,68 @@ export class Orchestrator {
         this.state.completed.add(issueId)
         this.state.unclaim(issueId)
         this.state.addTokens(tokens.input, tokens.output, tokens.total)
-        // Schedule continuation retry (attempt=1, delay=1000ms)
-        scheduleRetry(issueId, issue.identifier, 1, 'Continuation', this.state, config, (id) => {
-          const cachedIssue = this.issueCache.get(id)
-          if (cachedIssue) {
-            this.state.claim(id)
-            this.dispatchWorker(cachedIssue, 1)
-          }
-        })
+
+        if (config.notifications_webhook_url && config.notifications_on_complete) {
+          fireWebhook(config.notifications_webhook_url, {
+            event: 'completed',
+            identifier: issue.identifier,
+            title: issue.title,
+            attempt,
+            tokens: {
+              input_tokens: tokens.input,
+              output_tokens: tokens.output,
+              total_tokens: tokens.total,
+            },
+            timestamp: new Date().toISOString(),
+          })
+        }
+        // No continuation retry — the poll loop will re-dispatch if the issue
+        // remains in a dispatch state on the next tick.
       },
       onFailed: (issueId, error, currentAttempt) => {
         log(`Worker failed for ${issue.identifier}: ${error}`)
         this.state.unclaim(issueId)
+
+        if (config.notifications_webhook_url && config.notifications_on_failure) {
+          fireWebhook(config.notifications_webhook_url, {
+            event: 'failed',
+            identifier: issue.identifier,
+            title: issue.title,
+            attempt: currentAttempt,
+            error,
+            timestamp: new Date().toISOString(),
+          })
+        }
+
         const nextAttempt = currentAttempt + 1
         if (nextAttempt > config.max_retries) {
           log(`Max retries exceeded for ${issue.identifier}`)
           return
         }
+
+        if (config.notifications_webhook_url && config.notifications_on_retry) {
+          fireWebhook(config.notifications_webhook_url, {
+            event: 'retry_queued',
+            identifier: issue.identifier,
+            title: issue.title,
+            attempt: nextAttempt,
+            error,
+            timestamp: new Date().toISOString(),
+          })
+        }
+
         scheduleRetry(issueId, issue.identifier, nextAttempt, error, this.state, config, (id) => {
           const cachedIssue = this.issueCache.get(id)
-          if (cachedIssue) {
-            this.state.claim(id)
-            this.dispatchWorker(cachedIssue, nextAttempt)
+          if (!cachedIssue) {
+            log(`No cached issue for ${id}, skipping retry dispatch`)
+            return
           }
+          this.state.claim(id)
+          this.dispatchWorker(cachedIssue, nextAttempt)
         })
+      },
+      persistHistory: (record) => {
+        void this.historyStore?.append(record)
       },
     }, abort)
   }

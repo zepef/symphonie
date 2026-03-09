@@ -66,8 +66,8 @@ export async function reconcile(
       )
       actions.killWorker(issueId, `Moved to terminal state: ${currentState}`, true)
     } else if (dispatchStates.includes(stateNorm)) {
-      // Still active — update state on the entry
-      entry.issue.state = currentState
+      // Still active — update state immutably to avoid mutating shared object
+      entry.issue = { ...entry.issue, state: currentState }
     } else {
       // Neither active nor terminal — kill without cleanup
       log(

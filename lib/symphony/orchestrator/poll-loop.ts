@@ -2,7 +2,7 @@ import { Issue, ResolvedConfig } from '../types'
 import { fetchCandidateIssues } from '../tracker/linear'
 import { OrchestratorState } from './state'
 import { reconcile } from './reconcile'
-import { sortCandidates, availableSlots } from './dispatch'
+import { sortCandidates, availableSlots, isEligible } from './dispatch'
 
 const log = (...args: unknown[]) => console.log('[symphony:poll]', ...args)
 
@@ -54,22 +54,30 @@ export async function tick(
   // ── Dispatch loop ─────────────────────────────────────────────────────────
   let slots = availableSlots(state, config)
 
+  // Track per-state dispatches within this tick to enforce per-state concurrency
+  const perStateDispatchedThisTick = new Map<string, number>()
+
   for (const issue of sorted) {
     if (slots <= 0) break
 
-    // Skip if already claimed or running
-    if (state.claimed.has(issue.id) || state.running.has(issue.id)) continue
+    if (!isEligible(issue, state, config)) continue
 
-    // Skip if in retry queue — will self-dispatch when timer fires
-    if (state.retryAttempts.has(issue.id)) continue
+    // Per-state enforcement: isEligible checks current running count, but we
+    // must also account for issues already dispatched in this same tick.
+    const stateKey = issue.state.trim().toLowerCase()
+    const stateLimit = config.max_concurrent_agents_by_state[stateKey]
+    if (stateLimit !== undefined) {
+      const alreadyRunning = [...state.running.values()].filter(
+        (e) => e.issue.state.trim().toLowerCase() === stateKey,
+      ).length
+      const dispatchedThisTick = perStateDispatchedThisTick.get(stateKey) ?? 0
+      if (alreadyRunning + dispatchedThisTick >= stateLimit) continue
+      perStateDispatchedThisTick.set(stateKey, dispatchedThisTick + 1)
+    }
 
-    // Check if issue has existing retry attempt data
-    const retryEntry = state.retryAttempts.get(issue.id)
-    const attempt = retryEntry ? retryEntry.attempt : 1
-
-    log(`Dispatching ${issue.identifier} (attempt ${attempt})`)
+    log(`Dispatching ${issue.identifier} (attempt 1)`)
     state.claim(issue.id)
-    callbacks.dispatchIssue(issue, attempt)
+    callbacks.dispatchIssue(issue, 1)
     slots--
   }
 }

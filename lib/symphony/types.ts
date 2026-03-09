@@ -39,6 +39,12 @@ export interface WorkflowFrontMatter {
   server?: {
     port?: number
   }
+  notifications?: {
+    webhook_url?: string
+    on_complete?: boolean
+    on_failure?: boolean
+    on_retry?: boolean
+  }
 }
 
 export interface WorkflowDefinition {
@@ -69,6 +75,10 @@ export interface ResolvedConfig {
   max_retries: number
   max_retry_backoff_ms: number
   server_port?: number
+  notifications_webhook_url?: string
+  notifications_on_complete: boolean
+  notifications_on_failure: boolean
+  notifications_on_retry: boolean
   prompt_template: string
 }
 
@@ -228,6 +238,7 @@ export interface IssueHistoryEntry {
   outcome: 'completed' | 'failed' | 'retried'
   error?: string
   tokens?: TokenTotals
+  after_run_hook_error?: string
 }
 
 export interface RefreshResponse {

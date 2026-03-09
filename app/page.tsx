@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { StateResponse } from '@/lib/symphony/types'
+import { apiFetch } from './lib/api-fetch'
 import { RunningTable } from './components/running-table'
 import { RetryQueue } from './components/retry-queue'
 import { TokenStats } from './components/token-stats'
@@ -17,7 +18,7 @@ export default function DashboardPage() {
 
   const fetchState = useCallback(async () => {
     try {
-      const res = await fetch('/api/v1/state')
+      const res = await apiFetch('/api/v1/state')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json() as StateResponse
       setData(json)
@@ -38,7 +39,7 @@ export default function DashboardPage() {
   const handleRefresh = async () => {
     setRefreshing(true)
     try {
-      await fetch('/api/v1/refresh', { method: 'POST' })
+      await apiFetch('/api/v1/refresh', { method: 'POST' })
       await fetchState()
     } finally {
       setRefreshing(false)
